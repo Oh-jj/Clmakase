@@ -2,7 +2,7 @@
 
 ![OliveYoung x AWS](docs/images/cover.png)
 
-> 담당 파트: 네트워크(VPC) / 컨테이너(EKS, Karpenter)
+> 담당 파트: 네트워크(VPC) / 컨테이너(EKS, Karpenter, Keda)
 
 ---
 
@@ -18,7 +18,7 @@
 
 ### 담당 범위
 
-올리브영 정기 세일의 순간 대량 트래픽에 대응하는 AWS EKS 기반 인프라 중, **VPC 네트워크 설계와 EKS 클러스터/노드 오토스케일링(Karpenter)** 파트를 담당했습니다.
+올리브영 정기 세일의 순간 대량 트래픽에 대응하는 AWS EKS 기반 인프라 중, **VPC 네트워크 설계와 EKS 클러스터/노드 오토스케일링(Karpenter, Keda)** 파트를 담당했습니다.
 
 ---
 
@@ -63,23 +63,32 @@ terraform/
 
 ---
 
-## 4. 파이프라인 흐름
+## 4. 핵심 설계 사항
 
-```
-git push main
-  │
-  ├─ [1] test             Gradle JUnit (allow_failure)
-  ├─ [2] build            Docker build → ECR push (commit SHA 태그)
-  ├─ [3] trivy-scan       CVE 취약점 스캔 (CRITICAL 시 실패)
-  ├─ [4] update-manifest  k8s/deployment.yaml 이미지 태그 교체 → git push [skip ci]
-  ├─ [5] deploy-secrets   EKS에 KEDA용 Secret 주입 (git 미포함, kubectl apply)
-  ├─ [6] deploy-frontend  npm build → S3 sync → CloudFront 캐시 무효화
-  └─ [7] load-test        k6 (수동 트리거, main 브랜치 한정)
-       │
-       ▼
-   ArgoCD가 manifest 변경 감지 → EKS 롤링 배포 (selfHeal/prune)
-```
+### [k8s] Karpenter + KEDA 아키텍처 설계
 
-- 이미지 태그를 `latest`가 아닌 commit SHA로 고정 → manifest 변경분이 생겨야 ArgoCD가 배포를 감지
-- `update-manifest` 커밋에 `[skip ci]`를 붙여 파이프라인 무한 루프 방지
-- Secret은 파이프라인 단계에서 `kubectl apply`로 직접 주입, git 리포지토리에는 값 자체를 남기지 않음
+**원인**
+
+올영세일은 이벤트 시작 시각이 사전 공지되는 구조라 트래픽 폭주 타이밍은 예측 가능하지만, 그 규모는 순간적입니다. 이 특성에서 두 가지 문제를 확인했습니다.
+
+- CPU 기반 HPA는 파드 내부 부하가 이미 올라간 뒤에야 반응 → 세일 시작 직후 스파이크 초입을 방어하지 못함
+- Pod 수를 늘려도 이를 실행할 Node가 없으면 Pending 상태로 대기 → Pod 레벨 스케일링과 Node 레벨 스케일링을 분리해서 설계할 필요
+
+**행동**
+
+이 문제를 KEDA와 Karpenter의 역할 분리로 풀었습니다.
+
+| 컴포넌트 | 역할 |
+|---|---|
+| KEDA | 몇 개의 Pod가 필요한가 — 외부 메트릭 기반 이벤트 드리븐 스케일링 |
+| Karpenter | 그 Pod를 어디서 실행할 것인가 — Pending Pod 요구사항을 분석해 노드를 자동 선택·프로비저닝 |
+
+KEDA 트리거 구성 과정에서 실제 장애를 겪었습니다. 최초엔 Kafka Consumer Lag을 트리거로 쓰려 했으나, consumer group이 완전히 구성되지 않은 상태에서 이를 활성화하자 오프셋 계산이 실패하며 스케일링 트리거 자체가 마비되는 cascade 에러가 발생했습니다. 복잡한 Kafka 내부 지표에 대한 의존을 걷어내고, Datadog RPS 기반 트리거로 단일화해 외부 의존성을 줄이는 방향으로 조치했습니다. 세일 오픈 직전에는 Cron 트리거로 Pod를 미리 확보해, Karpenter가 노드를 준비할 시간을 벌어 콜드 스타트를 없앴습니다.
+
+CPU/Memory 기반 HPA도 팀 내에서 논의됐지만 의도적으로 배제했습니다. 사후 반응형이라 스파이크 초입을 방어하지 못하는 데다, KEDA가 관리하는 Deployment에 `replicas` 값이 고정되어 있으면 HPA와 서로 충돌해 스케일링이 멈추는 문제를 실제로 겪었습니다. 팀원이 추가한 `Deployment.spec.replicas` 필드를 직접 제거해 KEDA 단독 제어 원칙을 지켰습니다.
+
+Karpenter는 NodePool을 통해 c/m/r 인스턴스 패밀리·6세대 이상·xlarge~8xlarge 범위에서 Spot과 On-Demand를 혼합 선택하도록 구성했고, Node Group을 사전에 정의하지 않고 Pending Pod의 요구사항을 실시간으로 분석해 인스턴스를 선택하도록 했습니다. 세일 시간대(23:50~01:30)에는 disruption budget을 0으로 설정해, 트래픽이 몰리는 순간에 노드가 통합·교체되며 파드가 흔들리는 것을 방지했습니다.
+
+**결과**
+
+단일 ScaledObject(Datadog RPS + Cron, Kafka는 consumer group 정비 후 재활성화 대기 상태)로 트리거를 통합 관리하고, KEDA 스케일아웃 → Pending Pod 발생 → Karpenter 노드 자동 프로비저닝으로 이어지는 2-레이어 구조를 구현했습니다. 150,000 VU 부하테스트에서 Pod 100개·노드 26개까지 자동 확장되었고, 서비스 중단·OOMKilled 없이 안정적으로 트래픽을 처리했습니다.
