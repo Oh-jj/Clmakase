@@ -20,58 +20,22 @@
 
 올리브영 정기 세일의 순간 대량 트래픽에 대응하는 AWS EKS 기반 인프라 중, **VPC 네트워크 설계와 EKS 클러스터/노드 오토스케일링(Karpenter)** 파트를 담당했습니다.
 
-### 핵심 인프라 성과
-
-| 지표 | 결과 |
-|---|---|
-| 최대 동시 접속자 | 150,000 VU (k6 부하테스트) |
-| 피크 RPS | 56,300 hits/s (Datadog 실측) |
-| P99 Latency | 180ms 이하 |
-| 서비스 중단 / OOMKilled | 0건 |
-| 최대 노드 | 26개 (Karpenter Spot/온디맨드 혼합 자동 프로비저닝) |
-| IaC 적용률 | Terraform 모듈 16개, 전 인프라 코드화 |
-
 ---
 
 ## 2. 시스템 아키텍처 구조도 & 트래픽 흐름
 
-```
-사용자
-  │ HTTPS
-  ▼
-Route53 → CloudFront ── S3 (프론트엔드 정적 호스팅)
-  │
-  ▼
-WAF → ALB (internet-facing, ACM 인증서 종단)
-  │  target-type: ip / health-check: /actuator/health:8080
-  ▼
-VPC (ap-northeast-2, 2-AZ: 2a/2c)
-  ├─ Public Subnet (10.0.101~102.0/24)   : ALB, NAT GW
-  ├─ Private App Subnet (10.0.1~2.0/24)  : EKS 워커 노드 (Karpenter 프로비저닝)
-  │     └─ EC2NodeClass(AL2023, amd64) + NodePool(c/m/r 6세대+, xlarge~8xlarge)
-  └─ Private Data Subnet (10.0.11~12.0/24) : Aurora MySQL(Multi-AZ), ElastiCache Redis
-```
+![OliveYoung Architecture](docs/images/Oliveyoung-Architecture.png)
 
-- Public/App/Data 서브넷을 3-tier로 분리 (AZ당 서브넷 3개 × 2AZ = 6서브넷)
-- Data 서브넷은 App 서브넷과 물리적으로 분리해 보안 경계 확보
-- NAT Gateway는 AZ별 1개씩 이중화
+사용자 요청은 Route53 → CloudFront/S3(프론트엔드 정적 호스팅) → WAF → ALB를 거쳐 VPC 내부로 유입됩니다. VPC는 ap-northeast-2 리전에 2개 AZ(2a/2c)로 이중화되어 있으며, Public/Private App/Private Data 3-tier 서브넷으로 분리했습니다.
+
+- **Public Subnet**: ALB, NAT Gateway 배치 — 인터넷 인그레스와 아웃바운드 경로만 노출
+- **Private App Subnet**: EKS 워커 노드 배치. Karpenter가 EC2NodeClass/NodePool 설정에 따라 트래픽 양에 맞춰 노드를 자동 프로비저닝하며, ALB는 target-type: ip로 Pod에 직접 라우팅
+- **Private Data Subnet**: Aurora MySQL(Multi-AZ), ElastiCache Redis 배치 — App 계층과 물리적으로 분리해 데이터 계층 보안 경계 확보
+- AZ별로 NAT Gateway를 이중화해 한쪽 AZ 장애 시에도 아웃바운드 경로 유지
 
 ---
 
-## 3. 기술 스택 및 채택 이유
-
-| 영역 | 기술 | 채택 이유 |
-|---|---|---|
-| IaC | Terraform (16개 모듈) | VPC/EKS/RDS 등 전 인프라를 모듈 단위로 분리해 환경 재현성과 상태 관리 일관성 확보 |
-| 네트워크 | VPC 3-tier 서브넷 (Public/App/Data) + AZ 이중화 | 워커 노드와 데이터 계층을 물리적으로 분리해 장애 격리 및 보안 경계 강화 |
-| 컨테이너 오케스트레이션 | EKS v1.30 | 관리형 컨트롤 플레인으로 운영 부담을 줄이고 대규모 트래픽에 필요한 확장성 확보 |
-| 노드 프로비저닝 | Karpenter (v1.0.1) | Managed Node Group 대비 인스턴스 패밀리 자동 선택 + Spot/On-Demand 혼합으로 비용 최적화. 세일 피크 시간대엔 disruption budget으로 노드 교체 0건 강제 |
-| 트래픽 인입 | AWS Load Balancer Controller (ALB Ingress) | target-type: ip로 kube-proxy 홉을 생략, Pod에 직접 라우팅해 지연 감소 |
-| GitOps 배포 | ArgoCD | Git을 단일 진실 소스로 삼아 selfHeal/prune으로 클러스터 상태와 매니페스트 상태를 자동 동기화 |
-
----
-
-## 4. IaC 디렉토리 구조
+## 3. IaC 디렉토리 구조
 
 ```
 terraform/
@@ -99,7 +63,7 @@ terraform/
 
 ---
 
-## 5. 파이프라인 흐름
+## 4. 파이프라인 흐름
 
 ```
 git push main
