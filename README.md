@@ -89,3 +89,11 @@ Karpenter는 NodePool을 통해 c/m/r 인스턴스 패밀리·6세대 이상·xl
 | Cron | 세일 전 Pod 사전 확보 | 예측 가능한 시간대 선제 대응, Karpenter 노드 준비 시간 확보 |
 
 단일 ScaledObject로 트리거를 통합 관리하고, KEDA 스케일아웃 → Pending Pod 발생 → Karpenter 노드 자동 프로비저닝으로 이어지는 2-레이어 구조를 구현했습니다. 150,000 VU 부하테스트에서 Pod 100개·노드 26개까지 자동 확장되었고, 서비스 중단·OOMKilled 없이 트래픽을 처리했습니다.
+
+---
+
+## 5. 트러블슈팅
+
+| 이슈 | 문서 |
+|---|---|
+| Karpenter CrashLoopBackOff | [karpenter-crashloopbackoff.md](docs/error/karpenter-crashloopbackoff.md) |
