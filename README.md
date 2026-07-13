@@ -97,3 +97,5 @@ Karpenter는 NodePool을 통해 c/m/r 인스턴스 패밀리·6세대 이상·xl
 | 이슈 | 문서 |
 |---|---|
 | Karpenter CrashLoopBackOff | [karpenter-crashloopbackoff.md](docs/error/karpenter-crashloopbackoff.md) |
+| KEDA Cascade 에러 | [keda-cascade-error.md](docs/error/keda-cascade-error.md) |
+| KEDA 부하테스트 기반 파라미터 튜닝 | [keda-load-test-tuning.md](docs/error/keda-load-test-tuning.md) |

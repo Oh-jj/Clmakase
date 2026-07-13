@@ -1,5 +1,11 @@
 # Karpenter CrashLoopBackOff 트러블슈팅
 
+```
+karpenter     karpenter-5bf9b94cc-m5k6h   0/1   CrashLoopBackOff   5 (9s ago)    6m54s
+karpenter     karpenter-5d7dd7d87-fpbsc   0/1   CrashLoopBackOff   5 (49s ago)   6m54s
+karpenter     karpenter-5d7dd7d87-pxv66   0/1   CrashLoopBackOff   5 (29s ago)   6m54s
+```
+
 ## 원인
 
 Karpenter를 배포한 초기 상태를 점검해보니, 서로 다른 지점에서 생긴 설정 문제 여러 개가 동시에 겹쳐 있었습니다.
@@ -37,6 +43,18 @@ EC2NodeClass가 참조하던 `cloudwave-dev-vpc` 태그를, 실제 서브넷/보
 기존 워커 노드용 Role과 Karpenter가 생성하는 노드용 Role을 모두 `aws-auth` ConfigMap에 등록해, 어떤 경로로 생성된 노드든 클러스터에 정상적으로 join되도록 했습니다.
 
 ## 결과
+
+```
+NAME                         READY   STATUS    RESTARTS   AGE
+karpenter-7cd48fd548-699rr   1/1     Running   0          ~
+karpenter-7cd48fd548-fflnx   1/1     Running   0          ~
+
+NAME                      NODECLASS   NODES   READY   AGE
+security-optimized-pool   default     0       True    ✅
+
+NAME      READY   AGE
+default   True    ✅
+```
 
 - Karpenter Pod가 `1/1 Running`으로 안정화되었고, NodePool/EC2NodeClass가 `Ready=True` 상태로 전환됨
 - Managed Node Group 없이 Karpenter 단독으로 노드를 프로비저닝하는 구조가 정상 동작함을 확인
